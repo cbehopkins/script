@@ -1,0 +1,175 @@
+#!/usr/bin/expect
+#Usage backup.expect <password> <host>...
+set hosts [lrange $argv 1 end ] 
+set password [lindex $argv 0]
+
+set user "cebhop"
+if {[info exists ::env(USER)]} {
+  set user $::env(USER)
+}
+#set backupDir "/home/$user/home/backup/pis"
+set backupDir "/media/pi_backup"
+
+set date [clock format [clock seconds]  -format %Y_%m_%d]
+
+puts "Date is:${date}"
+set test 0
+proc job {host user password backupDir test date} {
+  spawn ssh $user@$host
+  expect {
+  "The authenticity of host" {
+    puts "Error: Authentication problem for $host"
+    exit 1
+  }
+  "password"  {
+    send "${password}\r"
+    sleep 1
+    expect {
+      "Permission denied, please try again" {exit}
+      " \$"
+    }
+  }
+  " \$"
+  }
+  if {$test==1} {
+    puts "Found Command Prompt"
+  }
+  # Try and work out where root drive is mounted from
+  send "mount\n"
+  # I expect mount to return something like:
+  #/dev/mmcblk0p2 on / type ext4 (rw,noatime,data=ordered)
+  expect -re {(\/dev\/.*)p[0-9] on / type ext4 .*$}
+  set drive $expect_out(1,string)
+  expect " \$"
+  #puts "It's nice\n"
+  if {$test==1} {
+    puts "Found ${drive}"
+  }
+  send "ls ${backupDir}\r"
+  expect {
+    "No such file or directory" {
+      puts "Missing backup directory"
+      exit
+    }
+    " \$"
+  }
+  set timeout 1
+  send "echo $?\r"
+  expect {
+    "0" {}
+    default {
+      puts "Missing backup directory"
+      exit
+    }
+  }
+  send "hn=\"\$(hostname)\"\r"
+  expect " \$"
+  if {$test==1} {
+    send "sudo echo \${hn}_${date}.img.gz\r"
+  } else {
+    send "sudo dd if=${drive}  conv=sync,noerror bs=64K | gzip -c -9 > ${backupDir}/\${hn}_${date}.img.gz\r"
+    #send "sudo dd if=${drive}  conv=sync,noerror bs=64K of=${backupDir}/\${hn}_${date}.img\r"
+  }
+  
+  #Now the password or the sudo command
+  expect {
+    "password for" {
+      send "${password}\r"
+    }
+    default {
+      puts "Unknown response from Sudo Command"
+      exit
+    }
+  }
+  if {$test == 0} {
+    # If it takes more than an hour (on my systems)
+    # Something is wrong
+    # need a better backup command that reports status
+    set minute 60
+    set hour [expr $minute*60]
+    # Some backups can take up to 5 hours - allow 6
+    set timeout [expr $hour*6]
+    expect "records in"
+    expect "records out"
+  } else {
+    expect ".img.gz"
+  }
+  #Wait for the command prompt at the end
+  expect " \$" 
+  send "exit\r"
+  expect "logout"
+  expect "Connection to ${host} closed." 
+}
+proc rezip {host user password backupDir test date} {
+  set timeout 40
+  spawn ssh $user@$host
+  expect {
+  "The authenticity of host" {
+    puts "Error: Authentication problem for $host"
+    exit 1
+  }
+  "password"  {
+    send "${password}\r"
+    sleep 1
+    expect {
+      "Permission denied, please try again" {exit}
+      ":~"
+    }
+  }
+  ":~"
+  }
+  #if {$test==1} {
+    puts "Found Command Prompt"
+  #}
+  set timeout 10
+  send "echo Hello\r"
+  expect "Hello"
+  expect ":~"
+
+
+  send "echo Bob\r"
+  expect "Bob"
+  send "echo Steve\r"
+  expect "Steve"
+  expect ":~"
+  send "echo Fred\r"
+  expect "Fred"
+
+
+  set minute 60
+  set hour [expr $minute*60]
+  # Some backups can take up to 5 hours - allow 6
+  set timeout [expr $hour*5]
+  send "find ${backupDir} -name \"*${date}.img.gz\" | tar -C ${backupDir} -T - -cf - | gzip - -c9 >  ${backupDir}/${date}.tgz\r"
+  expect ":~"
+
+  send "echo $?\r"
+  expect {
+    "0" {}
+    default {
+      puts "Failed to create backup"
+      exit
+    }
+  }
+
+  send "echo Goodbye\r"
+  expect "Goodbye"
+  expect ":~"
+  set timeout 10
+  send "find ${backupDir} -name \"*${date}.img.gz\" -delete\r"
+  expect ":~"
+  send "exit\r"
+  expect "logout"
+  expect "Connection to ${host} closed."
+
+}
+foreach host $hosts {
+  job $host $user $password $backupDir $test $date
+  puts "Job finished for $host\n"
+}
+#rezip [lindex $hosts 0] $user $password $backupDir $test
+set backupDir "/c/media/pi_backup"
+set serverName "dronearm"
+rezip $serverName $user $password $backupDir $test $date
+
+exit 0
